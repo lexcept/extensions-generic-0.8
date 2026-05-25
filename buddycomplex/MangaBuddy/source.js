@@ -26,8 +26,8 @@ var _Sources = (() => {
   };
 
   var MangaBuddyInfo = {
-    version: "3.0.0",
-    name: "MangaBuddy",
+    version: "3.1.0",
+    name: "Mangak",
     description: "Extension that pulls manga from " + BASE_DOMAIN + " (formerly mangabuddy.com)",
     author: "Netsky",
     authorWebsite: "http://github.com/TheNetsky",
@@ -116,18 +116,20 @@ var _Sources = (() => {
     }
 
     async getChapters(mangaId) {
-      const detail = await this.fetchTitleDetailBySlug(mangaId);
-      const rawChapters = detail.chapters || [];
+      const titleSqid = await this.resolveSlugToSqid(mangaId);
+      const payload = await this.apiGet("/titles/" + titleSqid + "/chapters");
+      const raw = payload.data;
+      const rawChapters = Array.isArray(raw) ? raw : (raw && (raw.items || raw.chapters)) || [];
       if (rawChapters.length === 0) {
         throw new Error("No chapters found for " + mangaId);
       }
 
-      const built = rawChapters.map((raw) => {
-        const chapNum = this.extractChapterNumber(raw);
-        const time = raw.updated_at ? new Date(raw.updated_at) : new Date(raw.cv || Date.now());
+      const built = rawChapters.map((r) => {
+        const chapNum = this.extractChapterNumber(r);
+        const time = r.updated_at ? new Date(r.updated_at) : new Date(r.cv || Date.now());
         return {
-          id: raw.id,
-          name: raw.name,
+          id: r.slug || r.id,
+          name: r.name,
           chapNum,
           time
         };
@@ -149,8 +151,8 @@ var _Sources = (() => {
     }
 
     async getChapterDetails(mangaId, chapterId) {
-      const titleSqid = await this.resolveSlugToSqid(mangaId);
-      const payload = await this.apiGet("/titles/" + titleSqid + "/chapters/" + chapterId);
+      const resolved = await this.resolveChapter(mangaId, chapterId);
+      const payload = await this.apiGet("/titles/" + resolved.titleSqid + "/chapters/" + resolved.chapterSqid);
       const pages = (payload.data && payload.data.chapter && payload.data.chapter.images) || [];
       if (pages.length === 0) {
         throw new Error("No pages for chapter " + chapterId);
@@ -160,6 +162,24 @@ var _Sources = (() => {
         mangaId,
         pages
       });
+    }
+
+    async resolveChapter(mangaSlug, chapterId) {
+      // Backward-compatible: v2.0.4 stored chapterId as the chapter slug (e.g. "chapter-161").
+      // v3 API needs both title sqid and chapter sqid. The /titles/by-slug/.../chapters/...
+      // endpoint resolves both in a single round trip.
+      if (/^[A-Za-z0-9]+$/.test(chapterId) && chapterId.length <= 10 && !/^chapter/i.test(chapterId)) {
+        // Already looks like a sqid (purely alphanumeric, short). Resolve only the title.
+        const titleSqid = await this.resolveSlugToSqid(mangaSlug);
+        return { titleSqid, chapterSqid: chapterId };
+      }
+      const payload = await this.apiGet(
+        "/titles/by-slug/" + encodeURIComponent(mangaSlug) + "/chapters/" + encodeURIComponent(chapterId)
+      );
+      const newUrl = (payload.data && payload.data.new_url) || "";
+      const m = newUrl.match(/^\/titles\/([A-Za-z0-9]+)(?:-[^/]*)?\/([A-Za-z0-9]+)/);
+      if (!m) throw new Error('Could not resolve chapter "' + chapterId + '" for ' + mangaSlug);
+      return { titleSqid: m[1], chapterSqid: m[2] };
     }
 
     async getSearchTags() {
